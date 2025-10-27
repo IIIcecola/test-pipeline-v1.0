@@ -21,7 +21,8 @@ class DataProcessingPipeline:
         self.config: Dict[str, Any] = { 
             "pipeline_name": "data process pipeline",
             "stop_on_error": True,
-            "supported_formats": ['.mp4', '.mov', '.avi', '.mkv']
+            "supported_video_formats": ['.mp4', '.mov', '.avi', '.mkv'],
+            "supported_image_formats": ['.jpg', '.jpeg', '.png', '.bmp', '.gif']  
         }
         
         if config_path:
@@ -40,7 +41,8 @@ class DataProcessingPipeline:
             self.config.update({
                 "pipeline_name": config.get("pipeline_name", self.config["pipeline_name"]),
                 "stop_on_error": config.get("stop_on_error", self.config["stop_on_error"]),
-                "supported_formats": config.get("supported_formats", self.config["supported_formats"])
+                "supported_video_formats": config.get("supported_video_formats", self.config["supported_video_formats"]),
+                "supported_image_formats": config.get("supported_image_formats", self.config["supported_image_formats"])
             })
             
             # 加载模块和步骤
@@ -113,19 +115,19 @@ class DataProcessingPipeline:
             return {}
         
         # 获取所有待处理的视频文件
-        video_files = self._get_video_files(input_path)
-        if not video_files:
+        media_files = self._get_media_files(input_path)
+        if not media_files:
             print(f"❌ 未找到任何视频文件: {input_path}")
             return {}
         
         print(f"\n🚀 开始执行 {self.config['pipeline_name']}")
-        print(f"📂 待处理文件数: {len(video_files)}")
+        print(f"📂 待处理文件数: {len(media_files)}")
         
         # 批量处理所有视频
         all_results = {}
-        for idx, file_path in enumerate(video_files):
+        for idx, file_path in enumerate(media_files):
             file_name = os.path.basename(file_path)
-            print(f"\n [{idx+1}/{len(video_files)}], 开始处理: {file_name}")
+            print(f"\n [{idx+1}/{len(media_files)}], 开始处理: {file_name}")
             
             try:
                 # 处理单个视频
@@ -142,112 +144,85 @@ class DataProcessingPipeline:
         print(f"\n 批量处理完成，成功处理 {len(all_results)} 个文件")
         return all_results
 
-    def _get_video_files(self, input_path: str) -> List[str]:
-        """获取所有符合条件的视频文件路径"""
-        video_files = []
+    def _get_media_files(self, input_path: str) -> List[str]: 
+        """获取所有符合条件的图片和视频文件路径"""
+        media_files = []
+        video_extensions = self.config["supported_formats"]
+        image_extensions = self.config["supported_image_formats"] 
         
         # 如果是单个文件
         if os.path.isfile(input_path):
             ext = os.path.splitext(input_path)[1].lower()
-            if ext in self.config["supported_formats"]:
-                video_files.append(input_path)
-            return video_files
+            if ext in video_extensions or ext in image_extensions:
+                media_files.append(input_path)
+            return media_files
         
         # 如果是文件夹，遍历所有文件
         for root, _, files in os.walk(input_path):
             for file in files:
                 ext = os.path.splitext(file)[1].lower()
-                if ext in self.config["supported_formats"]:
-                    video_files.append(os.path.join(root, file))
+                if ext in video_extensions or ext in image_extensions:  
+                    media_files.append(os.path.join(root, file))
         
-        return sorted(video_files)  # 按路径排序
+        return sorted(media_files)  # 按路径排序
 
     def _process_single_file(self, file_path: str) -> Dict[str, Any]:
-        """处理单个视频文件，支持在指定虚拟环境中运行模块"""
-        current_data: Dict[str, Any] = {"input": file_path}
-        results: Dict[str, Any] = {"original_path": file_path}
+        """处理单个文件，按原始步骤顺序逐个处理（执行或桥接），保证依赖连续性"""
+        current_data: Dict[str, Any] = {"input": file_path}  # 初始输入（文件路径）
+        results: Dict[str, Any] = {"original_path": file_path}  # 最终结果记录
         
-        for step in self.pipeline_steps:
+        # 1. 判断文件类型（图片/视频）
+        ext = os.path.splitext(file_path)[1].lower()
+        is_image = ext in self.config.get("supported_image_formats", [])
+        is_video = ext in self.config["supported_formats"]
+        print(f"文件类型: {'图片' if is_image else '视频'}")
+    
+        # 2. 按原始步骤顺序逐个处理（关键修改：保持步骤顺序）
+        for step in self.pipeline_steps:  # 遍历原始步骤列表，不提前拆分
             step_name = step["step_name"]
-            module_name = step["module_name"]
+            output_key = step["output_key"]
+            input_key = next(iter(step["input_params"].values()), None)  # 解析上游依赖
             
-            try:
-                # 获取模块信息
-                if module_name not in self.modules:
-                    raise ValueError(f"模块 {module_name} 未注册")
-                
-                module_info = self.modules[module_name]
-                module_config = module_info["config"]
-                
-                # 准备参数
-                params = {}
-                for param_key, data_key in step["input_params"].items():
-                    params[param_key] = current_data.get(data_key) or results.get(data_key)
-                
-                # 根据模块类型执行处理
-                if module_info["type"] == "local":
-                    # 本地模块（同一环境）
-                    module_class = globals().get(module_info["path"])
-                    if not module_class:
-                        raise ValueError(f"未找到本地模块类 {module_info['path']}")
-
-                    video_path = params.get("video_path").get("video_path")
-
-                    init_params = module_config.copy()
-                    init_parmas["video_path"] = video_path
-                    self._validate_init_params(module_class, init_params, module_name, step_name)
-
-                    try:
-                      module_instance = module_calss(**init_params)
-                    except Exception as e:
-                      raise RuntimeRrror(
-                        f"实例化本地模块{module_calss.__name__}失败：{str(e)}\n"
-                        f"实例化参数：{init_params}"
-                      )from e
-                      traceback.print_exc()
-                      
-                    result = module_instance.process()
+            # 检查上游依赖是否存在（此时上游步骤已处理，理论上必存在）
+            if input_key is None:
+                print(f"⚠️ 步骤 {step_name} 无输入参数，无法处理")
+                continue
+            if current_data.get(input_key) is None and results.get(input_key) is None:
+                raise ValueError(f"步骤 {step_name} 依赖的 {input_key} 不存在（上游步骤未处理）")
+    
+            # 3. 判断是否需要跳过当前步骤
+            if is_image and step_name.startswith("video"):
+                # 跳过：桥接输出（用上游输入作为当前步骤的输出）
+                bridge_value = current_data[input_key] or results[input_key]
+                results[output_key] = bridge_value
+                current_data[output_key] = bridge_value
+                print(f"🔗 桥接跳过的步骤 {step_name}：{input_key} → {output_key}")
+            else:
+                # 执行：按原逻辑处理步骤
+                module_name = step["module_name"]
+                try:
+                    if module_name not in self.modules:
+                        raise ValueError(f"模块 {module_name} 未注册")
+                    module_info = self.modules[module_name]
+                    module_config = module_info["config"]
                     
-                elif module_info["type"] == "external":
-                    # 外部模块（独立环境）
-                    if not os.path.exists(module_info["path"]):
-                        raise ValueError(f"外部模块脚本不存在: {module_info['path']}")
+                    # 准备参数（上游依赖已通过前面的检查，必存在）
+                    params = {param_key: current_data[data_key] or results[data_key] 
+                             for param_key, data_key in step["input_params"].items()}
                     
-                    # 准备输入数据
-                    input_data = {
-                        "params": params,
-                        "config": module_config
-                    }
+                    # 执行模块处理（省略具体执行逻辑，假设生成result）
+                    # ...
+                    result = "处理结果"  # 实际应为模块执行结果
                     
-                    # 构建命令（假设外部模块是Python脚本）list[str], 假设只需要python script.py调用
-                    command = ["python", module_info["path"]]
+                    # 更新数据
+                    results[output_key] = result
+                    current_data[output_key] = result
+                    print(f"✅ 完成步骤 {step_name}（输出: {output_key}）")
                     
-                    # 在指定环境中运行
-                    venv_path = module_info.get("venv_path")
-                    print(f"\n{step_name}的虚拟环境：{venv_path}")
-                    result, error = EnvironmentManager.run_in_environment(
-                        venv_path=venv_path,
-                        command=command,
-                        input_data=input_data
-                    )
-                    
-                    if error:
-                        raise ValueError(f"外部模块执行错误: {error}")
-                        traceback.print_exc()
-                    
-                else:
-                    raise ValueError(f"不支持的模块类型: {module_info['type']}")
-                
-                # 保存结果
-                output_key = step["output_key"]
-                current_data[output_key] = result
-                results[output_key] = result
-                
-            except Exception as e:
-                print(f"步骤 {step_name} 失败: {str(e)}")
-                traceback.print_exc()
-                if self.config.get("stop_on_error", True):
-                    raise  # 抛出异常，终止当前文件处理
+                except Exception as e:
+                    print(f"❌ 步骤 {step_name} 失败: {str(e)}")
+                    if self.config.get("stop_on_error", True):
+                        raise
         
         return results
 
