@@ -210,9 +210,59 @@ class DataProcessingPipeline:
                     params = {param_key: current_data[data_key] or results[data_key] 
                              for param_key, data_key in step["input_params"].items()}
                     
-                    # 执行模块处理（省略具体执行逻辑，假设生成result）
-                    # ...
-                    result = "处理结果"  # 实际应为模块执行结果
+                    # 根据模块类型执行处理
+                    if module_info["type"] == "local":
+                        # 本地模块（同一环境）
+                        module_class = globals().get(module_info["path"])
+                        if not module_class:
+                            raise ValueError(f"未找到本地模块类 {module_info['path']}")
+    
+                        video_path = params.get("video_path").get("video_path")
+    
+                        init_params = module_config.copy()
+                        init_parmas["video_path"] = video_path
+                        self._validate_init_params(module_class, init_params, module_name, step_name)
+    
+                        try:
+                          module_instance = module_calss(**init_params)
+                        except Exception as e:
+                          raise RuntimeRrror(
+                            f"实例化本地模块{module_calss.__name__}失败：{str(e)}\n"
+                            f"实例化参数：{init_params}"
+                          )from e
+                          traceback.print_exc()
+                          
+                        result = module_instance.process()
+                        
+                    elif module_info["type"] == "external":
+                        # 外部模块（独立环境）
+                        if not os.path.exists(module_info["path"]):
+                            raise ValueError(f"外部模块脚本不存在: {module_info['path']}")
+                        
+                        # 准备输入数据
+                        input_data = {
+                            "params": params,
+                            "config": module_config
+                        }
+                        
+                        # 构建命令（假设外部模块是Python脚本）list[str], 假设只需要python script.py调用
+                        command = ["python", module_info["path"]]
+                        
+                        # 在指定环境中运行
+                        venv_path = module_info.get("venv_path")
+                        print(f"\n{step_name}的虚拟环境：{venv_path}")
+                        result, error = EnvironmentManager.run_in_environment(
+                            venv_path=venv_path,
+                            command=command,
+                            input_data=input_data
+                        )
+                        
+                        if error:
+                            raise ValueError(f"外部模块执行错误: {error}")
+                            traceback.print_exc()
+                        
+                    else:
+                        raise ValueError(f"不支持的模块类型: {module_info['type']}")
                     
                     # 更新数据
                     results[output_key] = result
