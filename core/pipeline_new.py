@@ -139,7 +139,7 @@ class DataProcessingPipeline:
           for file_name, file_path in current_files.items():
               try:
                   # 处理单个文件的当前步骤
-                  result = self._process_single_step(file_path, step, all_results[file_name])
+                  result = self._process_single_step(step, all_results[file_name])
                   step_results[file_name] = result
                   print(f"✅ 完成 {file_name} 的 {step_name} 处理")
               except Exception as e:
@@ -153,7 +153,7 @@ class DataProcessingPipeline:
           for file_name, result in step_results.items():
               all_results[file_name][output_key] = result
               # 假设步骤输出是文件路径，作为下一步的输入
-              if isinstance(result, str) and os.path.exists(result):
+              if isinstance(result, dict) and os.path.exists(result["file_path"]):
                   next_files[file_name] = result
           
           current_files = next_files
@@ -164,7 +164,7 @@ class DataProcessingPipeline:
       print(f"\n 批量处理完成，共处理 {len(all_results)} 个文件")
       return all_results
 
-  def _process_single_step(self, file_path: str, step: Dict[str, Any], prev_results: Dict[str, Any]) -> Any:
+  def _process_single_step(self, step: Dict[str, Any], prev_results: Dict[str, Any]) -> Any:
       """处理单个文件的单个步骤"""
       step_name = step["step_name"]
       module_name = step["module_name"]
@@ -182,8 +182,6 @@ class DataProcessingPipeline:
           # 从之前的结果中获取参数
           if data_key in prev_results:
               params[param_key] = prev_results[data_key]
-          elif data_key == "input":
-              params[param_key] = file_path
           else:
               raise ValueError(f"步骤 {step_name} 依赖的 {data_key} 不存在")
       
@@ -193,13 +191,14 @@ class DataProcessingPipeline:
           if not module_class:
               raise ValueError(f"未找到本地模块类 {module_info['path']}")
           
+          file_path = params.get("file_path").get("file_path")
           init_params = module_config.copy()
-          # 根据需要添加初始化参数
+          init_params["file_path"] = file_path
           self._validate_init_params(module_class, init_params, module_name, step_name)
           
           try:
-              module_instance = module_class(** init_params)
-              return module_instance.process(**params)
+              module_instance = module_class(**init_params)
+              return module_instance.process()
           except Exception as e:
               raise RuntimeError(
                   f"本地模块 {module_class.__name__} 处理失败：{str(e)}"
