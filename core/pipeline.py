@@ -220,14 +220,14 @@ class DataProcessingPipeline:
                         video_path = params.get("video_path").get("video_path")
     
                         init_params = module_config.copy()
-                        init_parmas["video_path"] = video_path
+                        init_params["video_path"] = video_path
                         self._validate_init_params(module_class, init_params, module_name, step_name)
     
                         try:
-                          module_instance = module_calss(**init_params)
+                          module_instance = module_class(**init_params)
                         except Exception as e:
                           raise RuntimeRrror(
-                            f"实例化本地模块{module_calss.__name__}失败：{str(e)}\n"
+                            f"实例化本地模块{module_class.__name__}失败：{str(e)}\n"
                             f"实例化参数：{init_params}"
                           )from e
                           traceback.print_exc()
