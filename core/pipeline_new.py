@@ -163,6 +163,8 @@ class DataProcessingPipeline:
                 })
             except Exception as e:
                 print(f"{step_name failed: {str(e)}}")
+                traceback.print_exc()
+                sys.exit(1)
                 return all_results
     
         print(f"\n批量处理完成，总步骤数: {len(all_results['steps'])}")
@@ -221,6 +223,8 @@ class DataProcessingPipeline:
                     "error": str(e),
                     "stage": "bridge"
                 })
+                raise RuntimeError(f"桥接 {file_type} 出错: {str(e)}") from e
+                traceback.print_exc()
     
         # 2. 处理需要执行的类型（批量输入目录给模块）
         process_types = [t for t in input_classified if t not in skip_types]
@@ -257,6 +261,8 @@ class DataProcessingPipeline:
                     "error": str(e),
                     "stage": "process"
                 })
+                raise RuntimeError(f"批量处理 {file_type} 出错: {str(e)}") from e
+                traceback.print_exc()
     
         return step_result
 
@@ -279,8 +285,12 @@ class DataProcessingPipeline:
             init_params["video_path"] = video_path
             self._validate_init_params(module_class, init_params, module_name, step_name)
             
-            module_instance = module_class(**init_params)
-            return module_instance.process() 
+            try:
+                module_instance = module_class(**init_params)
+                return module_instance.process() 
+            except Exception as e:
+                raise RuntimeError(f"本地模块{module_name} 出错: {str(e)}") from e
+                traceback.print_exc()
     
         elif module_info["type"] == "external":
             # 外部模块：通过命令行传递输入/输出目录
@@ -300,6 +310,7 @@ class DataProcessingPipeline:
             )
             if error:
                 raise ValueError(f"外部模块执行错误: {error}")
+                traceback.print_exc()
             return result
     
         else:
