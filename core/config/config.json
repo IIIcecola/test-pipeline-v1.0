@@ -1,0 +1,30 @@
+{
+  "pipeline_name": "pipeline",
+  "support_video_formats": [".mp4"],
+  "support_image_formats": [".jpg", ".png"],
+  "default_overwrite": false,
+  "modules": {
+    "module_name": {
+      "type": "external",
+      "path": "",
+      "venv_path": "",
+      "config":{
+        "output_path":"path/to/output",
+        "params": "params"
+      }
+    }
+  }
+  "pipeline_steps": [
+    {
+      "step_name": "video_preprocess",
+      "module_name": "video_processor",
+      "input_params": {
+        "file_path": "input"
+      }
+      "bridge": {
+        "skip_types": ["image"],
+        "action": "copy"
+      }
+    }
+  ]
+}
