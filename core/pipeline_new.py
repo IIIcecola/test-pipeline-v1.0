@@ -159,7 +159,7 @@ class DataProcessingPipeline:
                     "input_dir": current_dir,
                     "input_classified": {k: len(v) for k, v in current_classified.items()},  # 记录数量
                     "output_dir": output_path,
-                    "result": step_result
+                    "step_result": step_result
                 })
             except Exception as e:
                 print(f"{step_name failed: {str(e)}}")
