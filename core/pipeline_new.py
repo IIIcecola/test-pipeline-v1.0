@@ -12,6 +12,7 @@ from data_clean.video_duration_filter_pipeline import VideoDurationFilter
 from data_process.blur_pipeline import BlurDetector
 from utils.venv import  EnvironmentManager
 from utils.utils import write_processing_log
+from utils.path_manager import PathManager
 
 class DataProcessingPipeline:
     def __init__(self, config_path: Optional[str] = None):
@@ -22,11 +23,18 @@ class DataProcessingPipeline:
             "pipeline_name": "data process pipeline",
             "stop_on_error": True,
             "supported_video_formats": ['.mp4', '.mov', '.avi', '.mkv'],
-            "supported_image_formats": ['.jpg', '.jpeg', '.png', '.bmp', '.gif']  
+            "supported_image_formats": ['.jpg', '.jpeg', '.png', '.bmp', '.gif'],
+            "default_overwrite": False
         }
         
         if config_path:
             self.load_config(config_path)
+
+        self.path_manager = PathManager(
+            supported_image_formats=config.get("supported_image_formats"),
+            supported_video_formats=config.get("supported_video_formats"),
+            default_overwrite=config.get("default_overwrite", False)
+        )
 
     def load_config(self, config_path: str) -> None:
         """加载配置文件"""
@@ -42,7 +50,8 @@ class DataProcessingPipeline:
                 "pipeline_name": config.get("pipeline_name", self.config["pipeline_name"]),
                 "stop_on_error": config.get("stop_on_error", self.config["stop_on_error"]),
                 "supported_video_formats": config.get("supported_video_formats", self.config["supported_video_formats"]),
-                "supported_image_formats": config.get("supported_image_formats", self.config["supported_image_formats"])
+                "supported_image_formats": config.get("supported_image_formats", self.config["supported_image_formats"]),
+                "default_overwrite": config.get("default_overwrite", False)
             })
             
             # 加载模块和步骤
@@ -82,7 +91,7 @@ class DataProcessingPipeline:
                     step_name=step["step_name"],
                     module_name=step["module_name"],
                     input_params=step["input_params"],
-                    output_key=step.get("output_key")
+                    bridge=step["bridge"]
                 )
             except KeyError as e:
                 print(f"步骤配置缺少参数 {e}，已跳过")
@@ -95,7 +104,7 @@ class DataProcessingPipeline:
             
             self.modules[name] = module_info
 
-    def add_step(self, step_name: str, module_name: str, input_params: Dict[str, str], output_key: Optional[str] = None) -> None:
+    def add_step(self, step_name: str, module_name: str, input_params: Dict[str, str], bridge: Dict[str, str]) -> None:
         """添加处理步骤"""
         if module_name not in self.modules:
             print(f"⚠️ 步骤 {step_name} 引用了未注册的模块 {module_name}")
@@ -104,129 +113,251 @@ class DataProcessingPipeline:
             "step_name": step_name,
             "module_name": module_name,
             "input_params": input_params,
-            "output_key": output_key or step_name
+            "bridge": bridge
         })
 
     def run(self, input_path: str) -> Dict[str, Any]:
-      """执行数据处理管线，支持按步骤批量处理"""
-      if not os.path.exists(input_path):
-          print(f"❌ 输入路径不存在: {input_path}")
-          return {}
-      
-      # 获取所有待处理的媒体文件
-      media_files = self._get_media_files(input_path)
-      if not media_files:
-          print(f"❌ 未找到任何媒体文件: {input_path}")
-          return {}
-      
-      print(f"\n🚀 开始执行 {self.config['pipeline_name']}")
-      print(f"📂 待处理文件数: {len(media_files)}")
-      
-      # 初始化每个文件的结果字典
-      all_results = {os.path.basename(file_path): {"original_path": file_path} 
-                    for file_path in media_files}
-      
-      # 按步骤批量处理所有文件
-      current_files = {os.path.basename(fp): fp for fp in media_files}  # 当前步骤需要处理的文件
-      
-      for step in self.pipeline_steps:
-          step_name = step["step_name"]
-          output_key = step["output_key"]
-          print(f"\n===== 开始执行步骤: {step_name} =====")
-          
-          # 处理当前步骤的所有文件
-          step_results = {}
-          for file_name, file_path in current_files.items():
-              try:
-                  # 处理单个文件的当前步骤
-                  result = self._process_single_step(step, all_results[file_name])
-                  step_results[file_name] = result
-                  print(f"✅ 完成 {file_name} 的 {step_name} 处理")
-              except Exception as e:
-                  print(f"❌ {file_name} 的 {step_name} 处理失败: {str(e)}")
-                  if self.config.get("stop_on_error", True):
-                      print("遇到错误，已终止处理")
-                      return all_results
-          
-          # 更新结果并准备下一步的输入文件
-          next_files = {}
-          for file_name, result in step_results.items():
-              all_results[file_name][output_key] = result
-              # 假设步骤输出是文件路径，作为下一步的输入
-              if isinstance(result, dict) and os.path.exists(result["file_path"]):
-                  next_files[file_name] = result
-          
-          current_files = next_files
-          if not current_files:
-              print(f"⚠️ 步骤 {step_name} 处理后没有可用文件，终止后续步骤")
-              break
-      
-      print(f"\n 批量处理完成，共处理 {len(all_results)} 个文件")
-      return all_results
+        """执行数据处理管线，支持按步骤批量处理"""
+        if not os.path.exists(input_path):
+            print(f"输入路径不存在: {input_path}")
+            return {}
+        
+        print(f"\n开始执行 {self.config['pipeline_name']}")
 
-  def _process_single_step(self, step: Dict[str, Any], prev_results: Dict[str, Any]) -> Any:
-      """处理单个文件的单个步骤"""
-      step_name = step["step_name"]
-      module_name = step["module_name"]
-      input_params = step["input_params"]
+        # 预分类所有文件（仅执行一次）
+        classified_files = self.path_manager.classify_files(input_path)
+        print(f"📊 预分类结果: 图片{len(classified_files['image'])}个, 视频{len(classified_files['video'])}
+        
+        # 初始化每个文件的结果字典
+        current_dir = input_path
+        current_classified = classified_files  # 复用预分类结果，**步骤间更新**
+        all_results = {"steps": []}
+   
+        for step in self.config["pipeline_steps"]:
+            step_name = step["step_name"]
+            output_path = self.modules[step["module_name"]]["config"].get("output_path")
+            bridge_config = step.get("bridge", {})
+            print(f"\n===== 开始执行步骤: {step_name} =====")
+    
+            if not output_path:
+                print(f"步骤 {step_name} 未配置output_path，跳过")
+                continue
+            try:
+                # 处理当前步骤（批量处理）
+                step_result = self._process_step(
+                    step=step,
+                    input_classified=current_classified,  # 直接传入分类结果（图片/视频列表）
+                    output_dir=output_path,
+                    bridge_config=bridge_config
+                )
+        
+                # 更新下一步状态：重新分类当前步骤的输出目录（因为输出可能有新文件）
+                current_classified = self.path_manager.classify_files(output_path)
+                current_dir = output_path
+                all_results["steps"].append({
+                    "step_name": step_name,
+                    "input_dir": input_dir,
+                    "input_classified": {k: len(v) for k, v in current_classified.items()},  # 记录数量
+                    "output_dir": output_path,
+                    "result": step_result
+                })
+            except Exception as e:
+                print(f"{step_name failed: {str(e)}}")
+                return all_results
+    
+        print(f"\n批量处理完成，总步骤数: {len(all_results['steps'])}")
+        return all_results
+
+    def _process_step(self, step: Dict[str, Any], input_classified: Dict[str, List[str]], 
+        output_dir: str, bridge_config: Dict[str, Any]) -> Dict[str, Any]:
+        """批量处理单个步骤（桥接+模块批量处理）"""
+        step_name = step["step_name"]
+        module_name = step["module_name"]
+        module_info = self.modules[module_name]
+        module_config = module_info["config"]
+        skip_types = bridge_config.get("skip_types", [])  # 跳过的类型（如["image"]）
+        bridge_action = bridge_config.get("action", "copy")  # copy/move
+        if bridge_action not in ["copy", "move"]:
+            raise ValueError(f"步骤 {step_name} 桥接配置错误：action必须为'copy'或'move'")
+    
+        step_result = {
+            "processed_types": [],  # 处理的类型
+            "processed_count": 0,   # 处理的文件数
+            "bridged": [],          # 桥接的类型及数量
+            "errors": [],
+            "module_details": {}
+        }
+    
+        # 1. 处理桥接文件（批量复制/移动跳过的类型）
+        for file_type in skip_types:
+            if file_type not in input_classified:
+                continue
+            source_files = input_classified[file_type]
+            if not source_files:
+                continue
+    
+            try:
+                # 批量复制/移动到输出目录（不维持子目录）
+                skip_output_dir = os.path.join(output_dir, file_type)
+                if bridge_action == "copy":
+                    target_paths = self.path_manager.batch_copy_files(
+                        source_files=source_files,
+                        output_dir=output_dir
+                    )
+                else:
+                    target_paths = self.path_manager.batch_move_files(
+                        source_files=source_files,
+                        output_dir=output_dir
+                    )
+                step_result["bridged"].append({
+                    "type": file_type,
+                    "count": len(source_files),
+                    "action": bridge_action
+                })
+                print(f"桥接 {file_type} {len(source_files)} 个，动作: {bridge_action}")
+            except Exception as e:
+                step_result["errors"].append({
+                    "type": file_type,
+                    "error": str(e),
+                    "stage": "bridge"
+                })
+    
+        # 2. 处理需要执行的类型（批量输入目录给模块）
+        process_types = [t for t in input_classified if t not in skip_types]
+        for file_type in process_types:
+            source_files = input_classified[file_type]
+            if not source_files:
+                continue
+            module_input_dir = None
+            try:
+                # 准备模块输入目录（存放当前类型的所有文件）
+                module_input_dir = os.path.join(output_dir, f"_{file_type}_input")  # 临时输入目录
+                os.makedirs(module_input_dir, exist_ok=True)
+    
+                # 批量复制文件到模块输入目录（避免修改原始文件）
+                self.path_manager.batch_copy_files(
+                    source_files=source_files,
+                    output_dir=module_input_dir
+                )
+    
+                # 调用模块批量处理（输入为目录，模块内部批量处理）
+                module_result = self._process_batch_with_module(
+                    module_name=module_name,
+                    module_config=module_config,
+                    input_dir=module_input_dir,  # 模块输入：存放待处理文件的目录
+                    step_name=step_name
+                )
+                step_result["module_details"][file_type] = module_result
+                step_result["processed_types"].append(file_type)
+                step_result["processed_count"] += len(source_files)
+                print(f"批量处理 {file_type} {len(source_files)} 个，模块: {module_name}")
+            except Exception as e:
+                step_result["errors"].append({
+                    "type": file_type,
+                    "error": str(e),
+                    "stage": "process"
+                })
+    
+        return step_result
+
+    def _process_batch_with_module(self, module_name: str, module_config: Dict, input_dir: str, step_name: str) -> Any:
+        """调用模块批量处理目录（适配支持目录输入的模块）"""
+        module_info = self.modules.get(module_name)
+        if not module_info:
+            raise ValueError(f"模块 {module_name} 未注册")
+    
+        # 确保模块输出目录存在
+        os.makedirs(output_dir, exist_ok=True)
+    
+        if module_info["type"] == "local":
+            # 本地模块：传入输入目录和输出目录（模块内部批量处理）
+            module_class = globals().get(module_info["path"])
+            if not module_class:
+                raise ValueError(f"未找到本地模块类 {module_info['path']}")
+
+            init_params = module_config.copy()
+            init_params["video_path"] = video_path
+            self._validate_init_params(module_class, init_params, module_name, step_name)
+            
+            module_instance = module_class(**init_params)
+            return module_instance.process() 
+    
+        elif module_info["type"] == "external":
+            # 外部模块：通过命令行传递输入/输出目录
+            if not os.path.exists(module_info["path"]):
+                raise ValueError(f"外部模块脚本不存在: {module_info['path']}")
+            input_data = {
+                "file_path": input_dir,
+                "config": module_config
+            }
+            command = ["python", module_info["path"]]
+            venv_path = module_info.get("venv_path")
+    
+            result, error = EnvironmentManager.run_in_environment(
+                venv_path=venv_path,
+                command=command,
+                input_data=input_data
+            )
+            if error:
+                raise ValueError(f"外部模块执行错误: {error}")
+            return result
+    
+        else:
+            raise ValueError(f"不支持的模块类型: {module_info['type']}")
+
+    def _process_single_step(self, input_dir: str, step: Dict[str, Any]) -> Any:
+        """处理单个文件的单个步骤"""
+        step_name = step["step_name"]
+        module_name = step["module_name"]
+        input_params = step["input_params"]
       
-      if module_name not in self.modules:
-          raise ValueError(f"模块 {module_name} 未注册")
+        if module_name not in self.modules:
+            raise ValueError(f"模块 {module_name} 未注册")
       
-      module_info = self.modules[module_name]
-      module_config = module_info["config"]
+        module_info = self.modules[module_name]
+        module_config = module_info["config"]
       
-      # 准备参数
-      params = {}
-      for param_key, data_key in input_params.items():
-          # 从之前的结果中获取参数
-          if data_key in prev_results:
-              params[param_key] = prev_results[data_key]
-          else:
-              raise ValueError(f"步骤 {step_name} 依赖的 {data_key} 不存在")
-      
-      # 执行模块处理（复用原有的本地/外部模块处理逻辑）
-      if module_info["type"] == "local":
-          module_class = globals().get(module_info["path"])
-          if not module_class:
-              raise ValueError(f"未找到本地模块类 {module_info['path']}")
+        # 执行模块处理（复用原有的本地/外部模块处理逻辑）
+        if module_info["type"] == "local":
+            module_class = globals().get(module_info["path"])
+            if not module_class:
+                raise ValueError(f"未找到本地模块类 {module_info['path']}")
           
-          file_path = params.get("file_path").get("file_path")
-          init_params = module_config.copy()
-          init_params["file_path"] = file_path
-          self._validate_init_params(module_class, init_params, module_name, step_name)
+            init_params = module_config.copy()
+            init_params["file_path"] = input_dir
+            self._validate_init_params(module_class, init_params, module_name, step_name)
           
-          try:
-              module_instance = module_class(**init_params)
-              return module_instance.process()
-          except Exception as e:
-              raise RuntimeError(
-                  f"本地模块 {module_class.__name__} 处理失败：{str(e)}"
-              ) from e
+            try:
+                module_instance = module_class(**init_params)
+                return module_instance.process()
+            except Exception as e:
+                raise RuntimeError(
+                    f"本地模块 {module_class.__name__} 处理失败：{str(e)}"
+                ) from e
               
-      elif module_info["type"] == "external":
-          if not os.path.exists(module_info["path"]):
-              raise ValueError(f"外部模块脚本不存在: {module_info['path']}")
+        elif module_info["type"] == "external":
+            if not os.path.exists(module_info["path"]):
+                raise ValueError(f"外部模块脚本不存在: {module_info['path']}")
           
-          input_data = {
-              "params": params,
-              "config": module_config
-          }
+            input_data = {
+                "file_path": input_dir,
+                "config": module_config
+            }
           
-          command = ["python", module_info["path"]]
-          venv_path = module_info.get("venv_path")
+            command = ["python", module_info["path"]]
+            venv_path = module_info.get("venv_path")
           
-          result, error = EnvironmentManager.run_in_environment(
-              venv_path=venv_path,
-              command=command,
-              input_data=input_data
-          )
+            result, error = EnvironmentManager.run_in_environment(
+                venv_path=venv_path,
+                command=command,
+                input_data=input_data
+            )
           
-          if error:
-              raise ValueError(f"外部模块执行错误: {error}")
-          return result
-      else:
-          raise ValueError(f"不支持的模块类型: {module_info['type']}")
+            if error:
+                raise ValueError(f"外部模块执行错误: {error}")
+            return result
+        else:
+            raise ValueError(f"不支持的模块类型: {module_info['type']}")
     
     def _get_media_files(self, input_path: str) -> List[str]: 
         """获取所有符合条件的图片和视频文件路径"""
