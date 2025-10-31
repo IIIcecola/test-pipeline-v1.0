@@ -156,7 +156,7 @@ class DataProcessingPipeline:
                 current_dir = output_path
                 all_results["steps"].append({
                     "step_name": step_name,
-                    "input_dir": input_dir,
+                    "input_dir": current_dir,
                     "input_classified": {k: len(v) for k, v in current_classified.items()},  # 记录数量
                     "output_dir": output_path,
                     "result": step_result
