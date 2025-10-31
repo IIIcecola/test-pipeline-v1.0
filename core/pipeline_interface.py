@@ -1,7 +1,7 @@
 import os
 import sys
 from datetime import datetime
-from video_processing_pipeline import DataProcessingPipeline  # 导入管线类
+from pipeline_new import DataProcessingPipeline  # 导入管线类
 
 # 设置默认路径（用户可根据实际情况修改）
 DEFAULT_CONFIG_PATH = "configs/default_pipeline.json"
